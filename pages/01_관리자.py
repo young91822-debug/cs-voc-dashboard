@@ -42,13 +42,6 @@ st.title("관리자 페이지")
 st.caption("유선/채팅/게시판 파일 업로드 → 통합 master 저장 → app(대시보드)에서 자동 로드")
 
 # 토큰이 기본값(폴백)으로 잡힌 경우 안내
-if DEFAULT_TOKEN == "15886559":
-    st.info(
-        "⚠️ ADMIN_TOKEN이 설정되어 있지 않아 기본 토큰(15886559)으로 동작 중입니다.\n\n"
-        "원하는 토큰으로 바꾸려면 아래 중 하나로 설정하세요.\n"
-        "- 프로젝트 폴더에 `.streamlit/secrets.toml` 생성 후 `ADMIN_TOKEN = \"원하는값\"`\n"
-        "- 또는 PowerShell에서 실행 전 `$env:ADMIN_TOKEN=\"원하는값\"`"
-    )
 
 token = st.text_input("관리자 토큰", type="password", value="")
 ok = (s(token) == s(DEFAULT_TOKEN))
