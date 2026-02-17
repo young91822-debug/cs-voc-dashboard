@@ -1,672 +1,718 @@
-# app.py
+# app.py (Premium UI v12.4.1 - margin 충돌 에러 해결 + 도넛 세로 아래로 확정 보정)
 import os
-import json
-from datetime import datetime, date, timedelta
-
-import streamlit as st
 import pandas as pd
+import streamlit as st
 import plotly.express as px
 
-# =============================
-# Page
-# =============================
+# ✅ 클릭 이벤트(있으면 사용, 없으면 일반 차트)
+try:
+    from streamlit_plotly_events import plotly_events
+    HAS_PLOTLY_EVENTS = True
+except Exception:
+    plotly_events = None
+    HAS_PLOTLY_EVENTS = False
+
 st.set_page_config(page_title="VOC 대시보드", layout="wide")
 
-# =============================
-# Paths
-# =============================
-DATA_DIR = "data"
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, "data")
 MASTER_XLSX = os.path.join(DATA_DIR, "master.xlsx")
-MASTER_META = os.path.join(DATA_DIR, "master.meta")
 
-# =============================
-# Config
-# =============================
 REQUIRED_COLS = ["날짜", "기업명", "대분류", "중분류", "소분류", "채널"]
 CHANNELS = ["유선", "채팅", "게시판"]
 
-CHANNEL_COLOR_MAP = {
-    "유선": "#E53935",
-    "채팅": "#1E88E5",
-    "게시판": "#FB8C00",
-}
+# ✅ 채널 색상(도넛/월별 누적)
+CHANNEL_COLOR_MAP = {"유선": "#2563EB", "채팅": "#F97316", "게시판": "#10B981"}
 
-EXCLUDE_COMPANY = {"알수없음", "알 수 없음", "unknown", "Unknown", "UNKNOWN", "-", "nan", "None"}
-EXCLUDE_CATEGORY = {"안내사항없음_자체해결", "안내사항없음", "자체해결"}
+# ✅ Indigo (요일/시간/기업TOP/대중소TOP)
+INDIGO_MAIN = "#6366F1"
+INDIGO_TOP5 = "#4338CA"
+INDIGO_6_10 = "#A5B4FC"
 
-# =============================
+CHART_H_TOP = 420
+CHART_H_BOTTOM = 420
+CHART_H_SECOND = 380  # ✅ 기업TOP10/도넛 높이 통일(밑라인 정렬)
+
+# -----------------------------
+# Helpers: 관리자 페이지 자동 탐색
+# -----------------------------
+def find_admin_page() -> str | None:
+    pages_dir = os.path.join(BASE_DIR, "pages")
+    if not os.path.isdir(pages_dir):
+        return None
+
+    files = [f for f in os.listdir(pages_dir) if f.lower().endswith(".py")]
+    candidates = []
+    for f in files:
+        low = f.lower()
+        if ("admin" in low) or ("관리자" in f):
+            candidates.append(f)
+
+    if not candidates:
+        return None
+
+    priority = ["admin.py", "1_admin.py", "관리자.py", "1_관리자.py", "01_관리자.py"]
+    for p in priority:
+        for c in candidates:
+            if c == p:
+                return f"pages/{c}"
+    return f"pages/{candidates[0]}"
+
+ADMIN_PAGE = find_admin_page()
+
+# -----------------------------
+# ✅ query param으로 관리자 이동 처리
+# -----------------------------
+try:
+    qp = st.query_params
+    goto = qp.get("goto")
+except Exception:
+    qp = st.experimental_get_query_params()
+    goto = qp.get("goto", [None])[0]
+
+if goto == "admin":
+    if ADMIN_PAGE:
+        st.switch_page(ADMIN_PAGE)
+    else:
+        st.warning("pages/ 폴더에 관리자 파일이 없어요. (예: pages/01_관리자.py 또는 pages/admin.py)")
+
+# -----------------------------
 # CSS
-# =============================
+# -----------------------------
 st.markdown(
     """
-    <style>
-    header[data-testid="stHeader"]{display:none;}
-    footer{display:none;}
-    #MainMenu{visibility:hidden;}
+<style>
+:root{
+  --bg1:#eef2f7; --bg2:#e6ecf5;
+  --card-bd: rgba(148,163,184,0.28);
+  --shadow: 0 14px 34px rgba(15,23,42,0.12);
+  --radius: 18px;
+  --text1:#0f172a; --text2:#334155; --muted:#64748b;
+  --chip-bg: rgba(99,102,241,0.10);
+  --chip-bd: rgba(99,102,241,0.22);
+  --chip-tx: #3730a3;
+}
 
-    div[data-testid="stAppViewContainer"]{
-        background:
-          radial-gradient(900px 500px at 18% 10%, rgba(99,102,241,0.12), rgba(255,255,255,0) 60%),
-          radial-gradient(900px 500px at 82% 0%, rgba(16,185,129,0.10), rgba(255,255,255,0) 55%),
-          linear-gradient(180deg, rgba(248,250,252,1), rgba(255,255,255,1));
-    }
-    .block-container{padding-top:22px; padding-bottom:24px; max-width: 1400px;}
+.stApp{ background: linear-gradient(135deg, var(--bg1) 0%, var(--bg2) 100%); }
+header[data-testid="stHeader"], div[data-testid="stToolbar"], div[data-testid="stDecoration"], footer{ display:none !important; }
+#MainMenu{ visibility:hidden; }
+.block-container{ padding-top: 1.0rem; padding-bottom: 2.0rem; }
 
-    .card{
-        background: rgba(255,255,255,0.82);
-        border: 1px solid rgba(15,23,42,0.10);
-        border-radius: 18px;
-        box-shadow: 0 18px 40px rgba(2,8,23,0.08);
-        padding: 16px 16px;
-        margin-bottom: 14px;
-    }
+/* 헤더 */
+.header-wrap{
+  width:100%;
+  border-radius: 22px;
+  background: linear-gradient(135deg, #0b2a6f 0%, #103a8a 45%, #0b2a6f 100%);
+  box-shadow: 0 14px 40px rgba(2,6,23,0.25);
+  border: 1px solid rgba(255,255,255,0.12);
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 14px;
+  height: 58px;
+  display:flex;
+  align-items:center;
+  padding: 0 14px;
+}
+.header-wrap:before{
+  content:""; position:absolute; inset:-80px -80px auto auto;
+  width:220px;height:220px;
+  background: radial-gradient(circle, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 70%);
+  transform: rotate(15deg);
+}
+.header-title{
+  display:flex;align-items:center;gap:10px;
+  color: rgba(255,255,255,0.95);
+  font-weight: 850; font-size: 22px;
+  z-index:2;
+}
+.header-dot{
+  width:10px;height:10px;border-radius:999px;
+  background:#3b82f6; box-shadow:0 0 0 4px rgba(59,130,246,0.25);
+}
+.header-admin{
+  position:absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index:3;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  background: rgba(255,255,255,0.14);
+  border: 1px solid rgba(255,255,255,0.22);
+  color: rgba(255,255,255,0.95);
+  text-decoration:none;
+  font-size: 18px;
+  font-weight: 900;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+}
+.header-admin:hover{ background: rgba(255,255,255,0.22); }
 
-    .h1{font-size:34px; font-weight:950; letter-spacing:-0.6px; margin:0 0 4px 0; color: rgba(15,23,42,0.92);}
-    .sub{font-size:13px; color: rgba(15,23,42,0.55); margin:0 0 10px 0;}
+/* 필터 카드 */
+.filter-card{
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.90);
+  border: 1px solid var(--card-bd);
+  box-shadow: var(--shadow);
+  padding: 12px;
+  margin-bottom: 14px;
+}
 
-    .chip-wrap{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px 0}
-    .chip{
-        display:inline-block;
-        padding:6px 10px;
-        border-radius:999px;
-        background:rgba(255,255,255,0.88);
-        border:1px solid rgba(15,23,42,0.10);
-        font-size:12px;
-        font-weight:900;
-        color:rgba(15,23,42,0.80);
-        box-shadow:0 8px 16px rgba(2,8,23,0.06);
-    }
+/* 셀렉트/기간 입력 */
+div[data-baseweb="select"] > div,
+div[data-testid="stDateInput"] > div{
+  background-color: #f8fafc !important;
+  border: 1px solid rgba(148,163,184,0.30) !important;
+  border-radius: 14px !important;
+  min-height: 46px !important;
+  box-shadow: 0 6px 16px rgba(15,23,42,0.08) !important;
+}
 
-    .insight-title{
-        font-size:13px;
-        font-weight:950;
-        color: rgba(15,23,42,0.78);
-        margin: 2px 0 6px 0;
-    }
-    .insight{
-        background: rgba(255,255,255,0.92);
-        border: 1px solid rgba(15,23,42,0.10);
-        border-radius: 16px;
-        padding: 12px 14px;
-        box-shadow: 0 12px 24px rgba(2,8,23,0.06);
-        font-size: 13px;
-        color: rgba(15,23,42,0.80);
-        line-height: 1.55;
-        white-space: pre-line;
-        margin-top: 6px;
-    }
+/* 카드 */
+div[data-testid="stVerticalBlock"]:has(.card-titlebar){
+  background: #ffffff !important;
+  border: 1px solid var(--card-bd) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: var(--shadow) !important;
+  padding: 14px 14px 10px 14px !important;
+  margin-bottom: 14px !important;
+}
+/* 2겹 카드 제거 */
+div[data-testid="stVerticalBlock"]:has(.card-titlebar):has(div[data-testid="stVerticalBlock"]:has(.card-titlebar)){
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin-bottom: 0 !important;
+}
 
-    /* ✅ KPI 카드 크기 고정(다 똑같이) */
-    .kpi{
-        background: rgba(255,255,255,0.90);
-        border: 1px solid rgba(15,23,42,0.10);
-        border-radius: 18px;
-        padding: 14px 16px;
-        box-shadow: 0 14px 30px rgba(2,8,23,0.08);
-        min-height: 120px;
-        display:flex;
-        flex-direction:column;
-        justify-content:space-between;
-    }
-    .kpi-label{font-size:12px; font-weight:900; color: rgba(15,23,42,0.55);}
-    .kpi-value{font-size:28px; font-weight:950; color: rgba(15,23,42,0.92); margin-top:6px;}
-    .kpi-sub{font-size:12px; margin-top:10px; color: rgba(15,23,42,0.70); min-height:18px;}
+/* 타이틀 + 라인 */
+.card-titlebar{
+  display:flex; align-items:center; gap:8px;
+  font-size: 14px; font-weight: 950;
+  color: var(--text1);
+  margin: 0 0 6px 2px;
+}
+.card-titlebar .icon{
+  width:22px;height:22px;border-radius:8px;
+  display:inline-flex;align-items:center;justify-content:center;
+  background: rgba(99,102,241,0.12);
+  border: 1px solid rgba(99,102,241,0.20);
+  color:#3730a3;
+  font-size: 13px;
+}
+.card-line{
+  height: 2px;
+  width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(99,102,241,0.85), rgba(99,102,241,0.12));
+  margin: 2px 0 10px 0;
+}
 
-    .mom-pos{color:#10B981; font-weight:950;}
-    .mom-neg{color:#EF4444; font-weight:950;}
-    .mom-na{color:rgba(15,23,42,0.45); font-weight:900;}
+/* 인사이트 칩 */
+.chips{ display:flex; flex-wrap:wrap; gap:8px; margin: 0 0 8px 2px; }
+.chip{
+  display:inline-flex; align-items:center; gap:6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-bd);
+  color: var(--chip-tx);
+  font-weight: 850;
+  font-size: 12px;
+}
+.chip .b{ color:#0f172a; font-weight: 950; }
 
-    section[data-testid="stSidebar"] .stButton > button{
-        width: 100%;
-        display:flex !important;
-        align-items:center !important;
-        justify-content:center !important;
-        gap:8px !important;
-        line-height:1.2 !important;
-        padding:10px 12px !important;
-        border-radius:12px !important;
-        white-space:nowrap !important;
-    }
-    section[data-testid="stSidebar"] .stButton > button span{font-size:14px !important;}
-    </style>
-    """,
+/* Plotly 가운데정렬 */
+div[data-testid="stVerticalBlock"]:has(.card-titlebar) div[data-testid="stPlotlyChart"]{
+  display:flex !important;
+  justify-content:center !important;
+  margin: 0 !important;
+}
+div[data-testid="stVerticalBlock"]:has(.card-titlebar) div[data-testid="stPlotlyChart"] > div{
+  width: 100% !important;
+}
+</style>
+""",
     unsafe_allow_html=True,
 )
 
-# =============================
-# Helpers
-# =============================
-def s(v):
-    return "" if v is None else str(v).strip()
+# -----------------------------
+# Data
+# -----------------------------
+def _must_cols(df: pd.DataFrame, cols):
+    miss = [c for c in cols if c not in df.columns]
+    if miss:
+        raise ValueError(f"master.xlsx에 필수 컬럼이 없습니다: {miss}")
 
-def to_datetime_series(x: pd.Series) -> pd.Series:
-    if pd.api.types.is_datetime64_any_dtype(x):
-        return x
-    return pd.to_datetime(x, errors="coerce", infer_datetime_format=True)
+@st.cache_data(show_spinner=False)
+def load_master(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    df = pd.read_excel(path)
+    df.columns = [str(c).strip() for c in df.columns]
+    _must_cols(df, REQUIRED_COLS)
 
-def card_open():
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce")
+    df = df.dropna(subset=["날짜"]).copy()
+    df["월"] = df["날짜"].dt.to_period("M").dt.to_timestamp()
 
-def card_close():
-    st.markdown("</div>", unsafe_allow_html=True)
-
-def render_chips(items: list[str]):
-    html = '<div class="chip-wrap">' + "".join([f'<span class="chip">{c}</span>' for c in items]) + "</div>"
-    st.markdown(html, unsafe_allow_html=True)
-
-def read_meta_updated_at():
-    if os.path.exists(MASTER_META):
-        try:
-            meta = json.loads(open(MASTER_META, "r", encoding="utf-8").read())
-            return meta.get("updated_at") or "-"
-        except Exception:
-            return "-"
-    if os.path.exists(MASTER_XLSX):
-        return datetime.fromtimestamp(os.path.getmtime(MASTER_XLSX)).strftime("%Y-%m-%d %H:%M:%S")
-    return "-"
-
-def load_master_df():
-    if not os.path.exists(MASTER_XLSX):
-        return None
-    df = pd.read_excel(MASTER_XLSX, sheet_name="master")
-    df.columns = [s(c) for c in df.columns]
+    for c in ["기업명", "대분류", "중분류", "소분류", "채널"]:
+        df[c] = df[c].astype(str).str.strip()
+        df.loc[df[c].isin(["nan", "None", "NaN", ""]), c] = None
     return df
 
-def apply_filters(df: pd.DataFrame, start_d: date, end_d: date,
-                  channels: list[str], company: str, big: str, mid: str, small: str) -> pd.DataFrame:
-    dff = df.copy()
-    dff["날짜"] = to_datetime_series(dff["날짜"])
-    dff = dff.dropna(subset=["날짜"])
+def fmt_int(x):
+    try:
+        return f"{int(x):,}"
+    except Exception:
+        return "0"
 
-    start_dt = datetime.combine(start_d, datetime.min.time())
-    end_dt = datetime.combine(end_d, datetime.max.time())
-    dff = dff[(dff["날짜"] >= start_dt) & (dff["날짜"] <= end_dt)]
+def safe_ratio(num, den):
+    if not den:
+        return 0.0
+    return float(num) / float(den) * 100.0
 
-    if channels:
-        dff = dff[dff["채널"].isin(channels)]
-    if company != "전체":
-        dff = dff[dff["기업명"].astype(str) == company]
-    if big != "전체":
-        dff = dff[dff["대분류"].astype(str) == big]
-    if mid != "전체":
-        dff = dff[dff["중분류"].astype(str) == mid]
-    if small != "전체":
-        dff = dff[dff["소분류"].astype(str) == small]
-    return dff
-
-def prev_period_range(start_d: date, end_d: date):
-    days = (end_d - start_d).days + 1
-    prev_end = start_d - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=days - 1)
-    return prev_start, prev_end
-
-def safe_value_counts(df: pd.DataFrame, col: str):
-    if df.empty or col not in df.columns:
-        return pd.Series(dtype=int)
-    x = df[col].astype(str).fillna("").map(str.strip)
-    x = x[(x != "") & (x.str.lower() != "nan") & (x.str.lower() != "none")]
-    return x.value_counts()
-
-def build_insight(cur_df: pd.DataFrame, prev_df: pd.DataFrame) -> str:
-    cur_total = len(cur_df)
-    cur_companies = int(cur_df["기업명"].nunique()) if not cur_df.empty else 0
-    cur_ch = cur_df["채널"].value_counts() if not cur_df.empty else pd.Series(dtype=int)
-
-    def ch_line(ch):
-        c = int(cur_ch.get(ch, 0))
-        share = (c / cur_total * 100.0) if cur_total else 0.0
-        return f"- {ch}: {c:,}건 ({share:.1f}%)"
-
-    top_company = safe_value_counts(cur_df, "기업명")
-    top_company = top_company[~top_company.index.isin(EXCLUDE_COMPANY)].head(1)
-
-    top_big = safe_value_counts(cur_df, "대분류")
-    top_big = top_big[~top_big.index.isin(EXCLUDE_CATEGORY)].head(1)
-
-    top_company_txt = f"{top_company.index[0]} ({int(top_company.iloc[0]):,}건)" if len(top_company) else "-"
-    top_big_txt = f"{top_big.index[0]} ({int(top_big.iloc[0]):,}건)" if len(top_big) else "-"
-
-    lines = []
-    lines.append(f"① 기간 총 인입: {cur_total:,}건")
-    lines.append(f"② 기업 수: {cur_companies:,}개")
-    lines.append("③ 채널 현황 (건수/비중)")
-    lines.extend([ch_line(ch) for ch in CHANNELS])
-    lines.append(f"④ 주요 원인(Top): 기업={top_company_txt}, 카테고리(대분류)={top_big_txt}")
-    lines.append("⑤ 조치 제안: Top 기업·Top 카테고리 중심으로 FAQ/가이드 정비 + 급증 구간 원인 점검")
-    return "\n".join(lines)
-
-def mom_text(cur: int, prev: int) -> str:
-    """✅ 마지막월 기준 전월대비"""
-    if prev <= 0:
-        return '<span class="mom-na">전월대비 —</span>'
-    d = cur - prev
-    p = (d / prev) * 100.0
-    if d > 0:
-        return f'<span class="mom-pos">전월대비 ▲ {d:+,} ({p:+.1f}%)</span>'
-    if d < 0:
-        return f'<span class="mom-neg">전월대비 ▼ {d:+,} ({p:+.1f}%)</span>'
-    return '<span class="mom-na">전월대비 0 (0.0%)</span>'
-
-def compute_last_month_mom(df_filtered: pd.DataFrame):
-    """
-    ✅ 현재 필터 결과 안에서 '마지막 월'과 '이전 월' 비교
-    - 총 인입(건수)
-    - 채널별 인입
-    - 기업 수(유니크)
-    """
-    if df_filtered.empty:
-        return None
-
-    tmp = df_filtered.copy()
-    tmp["날짜"] = to_datetime_series(tmp["날짜"])
-    tmp = tmp.dropna(subset=["날짜"])
-
-    tmp["월"] = tmp["날짜"].dt.to_period("M").astype(str)  # 2026-01
-    tmp["_sort"] = tmp["날짜"].dt.strftime("%Y%m")
-
-    months = tmp[["_sort", "월"]].drop_duplicates().sort_values("_sort")["월"].tolist()
-    if len(months) < 2:
-        return None
-
-    last_m = months[-1]
-    prev_m = months[-2]
-
-    last_df = tmp[tmp["월"] == last_m]
-    prev_df = tmp[tmp["월"] == prev_m]
-
-    last_all = len(last_df)
-    prev_all = len(prev_df)
-
-    last_ch = last_df["채널"].value_counts()
-    prev_ch = prev_df["채널"].value_counts()
-
-    # ✅ 기업 수(유니크)도 월 기준으로 비교
-    last_comp = int(last_df["기업명"].nunique()) if not last_df.empty else 0
-    prev_comp = int(prev_df["기업명"].nunique()) if not prev_df.empty else 0
-
-    def fmt_month(m: str) -> str:
-        try:
-            y, mm = m.split("-")
-            return f"{y}.{mm}"
-        except Exception:
-            return m.replace("-", ".")
-
-    return {
-        "last_label": fmt_month(last_m),
-        "prev_label": fmt_month(prev_m),
-        "last_all": last_all,
-        "prev_all": prev_all,
-        "last_ch": last_ch,
-        "prev_ch": prev_ch,
-        "last_companies": last_comp,
-        "prev_companies": prev_comp,
-    }
-
-def render_kpi_cards(cur_total: int, cur_ch: pd.Series, cur_companies: int, mom_info):
-    """✅ KPI: 카드 크기 동일 / 전월대비 표시(기업 수도 포함)"""
-    def kpi_card(label: str, value: str, sub_html: str = "") -> str:
-        sub = sub_html if sub_html else "&nbsp;"
-        return f"""
-        <div class="kpi">
-          <div>
-            <div class="kpi-label">{label}</div>
-            <div class="kpi-value">{value}</div>
-          </div>
-          <div class="kpi-sub">{sub}</div>
-        </div>
-        """
-
-    if mom_info:
-        tag = f"({mom_info['prev_label']} → {mom_info['last_label']})"
-        mom_all = mom_text(mom_info["last_all"], mom_info["prev_all"])
-        mom_comp = mom_text(mom_info["last_companies"], mom_info["prev_companies"])
-        mom_by = {}
-        for ch in CHANNELS:
-            mom_by[ch] = mom_text(int(mom_info["last_ch"].get(ch, 0)), int(mom_info["prev_ch"].get(ch, 0)))
-    else:
-        tag = ""
-        mom_all = '<span class="mom-na">전월대비 —</span>'
-        mom_comp = '<span class="mom-na">전월대비 —</span>'
-        mom_by = {ch: '<span class="mom-na">전월대비 —</span>' for ch in CHANNELS}
-
-    cols = st.columns(5, gap="small")
-
-    with cols[0]:
-        st.markdown(kpi_card("총 인입", f"{cur_total:,}", f"{mom_all} {tag}"), unsafe_allow_html=True)
-
-    for i, ch in enumerate(CHANNELS, start=1):
-        c = int(cur_ch.get(ch, 0))
-        share = (c / cur_total * 100.0) if cur_total else 0.0
-        sub = f"비중 {share:.1f}% · {mom_by.get(ch, '<span class=\"mom-na\">전월대비 —</span>')} {tag}"
-        with cols[i]:
-            st.markdown(kpi_card(ch, f"{c:,}", sub), unsafe_allow_html=True)
-
-    # ✅ 기업 수 카드도 전월대비 표시
-    with cols[4]:
-        st.markdown(kpi_card("기업 수", f"{cur_companies:,}", f"{mom_comp} {tag}"), unsafe_allow_html=True)
-
-def make_bucket_key(df_in: pd.DataFrame, unit: str) -> pd.DataFrame:
-    if df_in.empty:
-        return df_in
-    tmp = df_in.copy()
-    tmp["날짜"] = to_datetime_series(tmp["날짜"])
-
-    if unit == "일":
-        tmp["집계키"] = tmp["날짜"].dt.strftime("%Y.%m.%d")
-        tmp["_sort"] = tmp["날짜"].dt.strftime("%Y%m%d")
-    elif unit == "주":
-        iso = tmp["날짜"].dt.isocalendar()
-        tmp["집계키"] = iso["year"].astype(str) + "W" + iso["week"].astype(str).str.zfill(2)
-        tmp["_sort"] = iso["year"].astype(str) + iso["week"].astype(str).str.zfill(2)
-    else:
-        tmp["집계키"] = tmp["날짜"].dt.strftime("%Y.%m")
-        tmp["_sort"] = tmp["날짜"].dt.strftime("%Y%m")
-    return tmp
-
-def topn_bar(df: pd.DataFrame, col: str, n=10, excludes=None, topk=5, crown=True):
-    vc = safe_value_counts(df, col)
-    if excludes:
-        vc = vc[~vc.index.isin(excludes)]
-    vc = vc.head(n)
-    if vc.empty:
-        return None
-
-    data = pd.DataFrame({"name": vc.index.tolist(), "count": vc.values.tolist()})
-    data = data.sort_values("count", ascending=False).reset_index(drop=True)
-
-    # ✅ TOP1 왕관 👑
-    if crown and len(data) > 0:
-        data.loc[0, "name"] = "👑 " + str(data.loc[0, "name"])
-
-    # ✅ TOP5 색 다르게
-    top_color = "#1E88E5"
-    rest_color = "#C7D2FE"
-    colors = [top_color if i < topk else rest_color for i in range(len(data))]
-
-    fig = px.bar(data, x="count", y="name", orientation="h", text="count")
-    fig.update_traces(
-        marker=dict(color=colors),
-        texttemplate="%{text:,}",
-        textposition="outside",
-        cliponaxis=False
+def kpi(label, value, sub, color="#2563eb"):
+    st.markdown(
+        f"""
+<div style="
+  border-radius: var(--radius);
+  background:#fff;
+  border:1px solid rgba(148,163,184,0.28);
+  box-shadow: 0 14px 34px rgba(15,23,42,0.12);
+  padding:14px 16px;
+  height:118px;
+  display:flex; gap:12px; align-items:center;">
+  <div style="width:8px;height:86px;border-radius:999px;background:{color};box-shadow:0 10px 20px {color}33;flex:0 0 auto;"></div>
+  <div>
+    <div style="color:#64748b;font-weight:800;font-size:13px;">{label}</div>
+    <div style="color:#0f172a;font-weight:950;font-size:32px;letter-spacing:-0.6px;line-height:1.05;">{value}</div>
+    <div style="color:#334155;font-size:12px;font-weight:700;">{sub}</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
     )
-    fig.update_layout(
-        height=460,
-        margin=dict(l=10, r=40, t=10, b=10),
+
+# ✅ 여기 핵심: margin을 "옵션"으로 받아서 중복 충돌 제거
+def base_layout(height: int, showlegend: bool = False, margin: dict | None = None):
+    if margin is None:
+        margin = dict(l=12, r=18, t=8, b=52)
+    return dict(
+        height=height,
+        margin=margin,
+        legend_title_text="",
+        xaxis_title="",
         yaxis_title="",
-        xaxis_title="건수",
-        yaxis=dict(categoryorder="total ascending"),
-        showlegend=False
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        showlegend=showlegend,
     )
-    fig.update_xaxes(rangemode="tozero")
-    return fig
 
-# =============================
-# Sidebar
-# =============================
-st.sidebar.title("VOC 대시보드")
-menu = st.sidebar.radio("메뉴", ["app", "관리자"], index=0)
-if menu == "관리자":
-    st.warning("관리자는 좌측 pages의 ‘01_관리자’ 페이지에서 실행됩니다.")
-    st.stop()
+def card_title(icon: str, title: str):
+    st.markdown(
+        f'<div class="card-titlebar"><span class="icon">{icon}</span>{title}</div><div class="card-line"></div>',
+        unsafe_allow_html=True,
+    )
 
-st.sidebar.subheader("필터")
-unit = st.sidebar.radio("집계 단위", ["일", "주", "월"], index=2)
+def chips(items):
+    if not items:
+        return
+    html = '<div class="chips">' + "".join([f'<span class="chip">{t}</span>' for t in items]) + "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
-# =============================
-# Load data
-# =============================
-df = load_master_df()
-if df is None:
-    st.error("master.xlsx가 없습니다. 관리자에서 먼저 업로드/저장하세요.")
-    st.stop()
+def clean_label(s: str) -> str:
+    return str(s).replace("👑 ", "").strip()
 
-missing = [c for c in REQUIRED_COLS if c not in df.columns]
-if missing:
-    st.error(f"master.xlsx 필수 컬럼 누락: {missing}\n현재 컬럼: {list(df.columns)}")
-    st.stop()
+def top10_like(df_: pd.DataFrame, col: str, height: int, exclude_pattern: str | None = None):
+    s = df_[col].dropna().astype(str).str.strip()
+    if exclude_pattern:
+        s = s[~s.str.contains(exclude_pattern, regex=True, na=False)]
+    top = s.value_counts().head(10).reset_index()
+    top.columns = [col, "건수"]
+    if top.empty:
+        st.info("데이터가 없어요.")
+        return
 
-df["날짜"] = to_datetime_series(df["날짜"])
-df = df.dropna(subset=["날짜"])
+    top = top.sort_values("건수", ascending=False).reset_index(drop=True)
+    top["순위"] = range(1, len(top) + 1)
+    top.loc[top["순위"] == 1, col] = "👑 " + top.loc[top["순위"] == 1, col]
+    top["그룹"] = top["순위"].apply(lambda r: "TOP5" if r <= 5 else "6~10")
+    cat_array = top[col].tolist()
 
-min_date = df["날짜"].min().date()
-max_date = df["날짜"].max().date()
-
-# ✅ 기본 기간은 항상 "전체"
-if "_preset" not in st.session_state:
-    st.session_state["_preset"] = "전체"
-
-st.sidebar.markdown("**기간**")
-p1 = st.sidebar.columns(3)
-if p1[0].button("7일"):
-    st.session_state["_preset"] = "7일"
-if p1[1].button("30일"):
-    st.session_state["_preset"] = "30일"
-if p1[2].button("3개월"):
-    st.session_state["_preset"] = "3개월"
-p2 = st.sidebar.columns(2)
-if p2[0].button("1년"):
-    st.session_state["_preset"] = "1년"
-if p2[1].button("전체"):
-    st.session_state["_preset"] = "전체"
-
-preset = st.session_state.get("_preset")
-
-if preset == "7일":
-    start_default, end_default = max(max_date - timedelta(days=6), min_date), max_date
-elif preset == "30일":
-    start_default, end_default = max(max_date - timedelta(days=29), min_date), max_date
-elif preset == "3개월":
-    start_default, end_default = max(max_date - timedelta(days=90), min_date), max_date
-elif preset == "1년":
-    start_default, end_default = max(max_date - timedelta(days=365), min_date), max_date
-else:
-    start_default, end_default = min_date, max_date
-
-date_range = st.sidebar.date_input("기간 선택", value=(start_default, end_default))
-start_d, end_d = (date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (start_default, end_default))
-
-# 채널 토글
-st.sidebar.markdown("**채널**")
-if "sel_channels" not in st.session_state:
-    st.session_state.sel_channels = CHANNELS.copy()
-
-def toggle_channel(ch):
-    cur = st.session_state.sel_channels
-    st.session_state.sel_channels = ([x for x in cur if x != ch] if ch in cur else (cur + [ch]))
-
-def set_all_channels():
-    st.session_state.sel_channels = CHANNELS.copy()
-
-def is_on(ch):
-    return ch in st.session_state.sel_channels
-
-st.sidebar.button(("☎️ 유선" if is_on("유선") else "유선"), on_click=toggle_channel, args=("유선",))
-st.sidebar.button(("💬 채팅" if is_on("채팅") else "채팅"), on_click=toggle_channel, args=("채팅",))
-st.sidebar.button(("📝 게시판" if is_on("게시판") else "게시판"), on_click=toggle_channel, args=("게시판",))
-st.sidebar.button("채널 전체 선택", on_click=set_all_channels)
-st.sidebar.caption(f"선택됨: {', '.join(st.session_state.sel_channels) if st.session_state.sel_channels else '없음'}")
-
-# 상세필터
-with st.sidebar.expander("상세필터", expanded=False):
-    companies = ["전체"] + sorted([x for x in df["기업명"].dropna().astype(str).unique().tolist() if x.strip()])
-    company = st.selectbox("기업", companies, index=0)
-
-    bigs = ["전체"] + sorted(df["대분류"].dropna().astype(str).unique().tolist())
-    big = st.selectbox("대분류", bigs, index=0)
-
-    df_big = df if big == "전체" else df[df["대분류"].astype(str) == big]
-    mids = ["전체"] + sorted(df_big["중분류"].dropna().astype(str).unique().tolist())
-    mid = st.selectbox("중분류", mids, index=0)
-
-    df_mid = df_big if mid == "전체" else df_big[df_big["중분류"].astype(str) == mid]
-    smalls = ["전체"] + sorted(df_mid["소분류"].dropna().astype(str).unique().tolist())
-    small = st.selectbox("소분류", smalls, index=0)
-
-# =============================
-# Current / Previous period
-# =============================
-cur_df = apply_filters(df, start_d, end_d, st.session_state.sel_channels, company, big, mid, small)
-prev_start, prev_end = prev_period_range(start_d, end_d)
-prev_df = apply_filters(df, prev_start, prev_end, st.session_state.sel_channels, company, big, mid, small)
-
-cur_total = len(cur_df)
-cur_companies = int(cur_df["기업명"].nunique()) if not cur_df.empty else 0
-cur_ch = cur_df["채널"].value_counts() if not cur_df.empty else pd.Series(dtype=int)
-
-# ✅ 마지막 월 기준 전월대비 계산
-mom_info = compute_last_month_mom(cur_df)
+    fig = px.bar(
+        top,
+        x="건수",
+        y=col,
+        orientation="h",
+        color="그룹",
+        color_discrete_map={"TOP5": INDIGO_TOP5, "6~10": INDIGO_6_10},
+        text="건수",
+    )
+    fig.update_layout(**base_layout(height, showlegend=False))
+    fig.update_yaxes(categoryorder="array", categoryarray=cat_array[::-1], showgrid=False, zeroline=False, showline=False)
+    fig.update_xaxes(showgrid=False, zeroline=False, showline=False, showticklabels=False)
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 # =============================
 # Header
 # =============================
-card_open()
-st.markdown('<div class="h1">VOC 대시보드</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub">전사 공유용 요약 + 전월대비 변화 + TOP 이슈를 한 번에 봅니다.</div>', unsafe_allow_html=True)
+admin_help = "관리자 페이지" if ADMIN_PAGE else "pages/에 관리자 파일이 없어요 (예: pages/01_관리자.py 또는 pages/admin.py)"
+admin_href = "?goto=admin" if ADMIN_PAGE else "#"
 
-render_chips([
-    f"집계: {unit}",
-    f"기간: {start_d} ~ {end_d}",
-    f"채널: {', '.join(st.session_state.sel_channels) if st.session_state.sel_channels else '없음'}",
-    f"기업: {company}",
-    f"대: {big}",
-    f"중: {mid}",
-    f"소: {small}",
-])
-
-st.markdown('<div class="insight-title">요약</div>', unsafe_allow_html=True)
-st.markdown(f'<div class="insight">{build_insight(cur_df, prev_df)}</div>', unsafe_allow_html=True)
-
-render_kpi_cards(cur_total, cur_ch, cur_companies, mom_info)
-
-st.caption(f"master 업데이트: {read_meta_updated_at()}")
-card_close()
+st.markdown(
+    f"""
+<div class="header-wrap">
+  <div class="header-title"><span class="header-dot"></span>VOC 대시보드</div>
+  <a class="header-admin" href="{admin_href}" title="{admin_help}">🛠️</a>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 # =============================
-# Charts: 기간추이 / 채널비중
+# Load master
 # =============================
-c1, c2 = st.columns([1.15, 0.85], gap="large")
+df = load_master(MASTER_XLSX)
+if df.empty:
+    st.error("data/master.xlsx 를 찾을 수 없거나 데이터가 비어있어요.")
+    st.stop()
+
+min_d = df["날짜"].min().date()
+max_d = df["날짜"].max().date()
+
+st.session_state.setdefault("big", "전체")
+st.session_state.setdefault("mid", "전체")
+st.session_state.setdefault("small", "전체")
+
+# =============================
+# Filters
+# =============================
+st.markdown('<div class="filter-card">', unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns([1.0, 1.6, 1.2, 1.8])
 
 with c1:
-    card_open()
-    st.subheader("기간 추이 (채널별)")
-
-    if cur_df.empty:
-        st.info("필터 결과가 없습니다.")
-    else:
-        tmp = make_bucket_key(cur_df, unit)
-        g = (
-            tmp.groupby(["집계키", "_sort", "채널"], as_index=False)
-               .size()
-               .rename(columns={"size": "count"})
-        )
-        g = g.sort_values(["_sort", "채널"], ascending=[True, True])
-
-        n_points = g["집계키"].nunique()
-        use_line = (unit == "월" and n_points > 10)
-
-        if use_line:
-            fig = px.line(
-                g,
-                x="집계키",
-                y="count",
-                color="채널",
-                markers=True,
-                color_discrete_map=CHANNEL_COLOR_MAP,
-            )
-        else:
-            fig = px.bar(
-                g,
-                x="집계키",
-                y="count",
-                color="채널",
-                barmode="group",
-                text="count",
-                color_discrete_map=CHANNEL_COLOR_MAP,
-            )
-            fig.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
-
-        fig.update_layout(
-            height=430,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="집계기준",
-            yaxis_title="건수",
-            legend_title_text="채널",
-        )
-        fig.update_xaxes(type="category")
-        fig.update_yaxes(rangemode="tozero")
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    card_close()
+    f_channel = st.selectbox("채널", ["전체"] + CHANNELS, index=0, key="channel")
 
 with c2:
-    card_open()
-    st.subheader("채널 비중 (현재기간)")
-
-    if cur_df.empty:
-        st.info("필터 결과가 없습니다.")
+    f_range = st.date_input("기간", value=(min_d, max_d), min_value=min_d, max_value=max_d, key="range")
+    if isinstance(f_range, tuple) and len(f_range) == 2:
+        start_d, end_d = f_range
     else:
-        p = cur_df["채널"].value_counts().reset_index()
-        p.columns = ["채널", "count"]
+        start_d, end_d = min_d, max_d
 
-        fig2 = px.pie(
-            p,
-            names="채널",
-            values="count",
-            hole=0.55,
-            color="채널",
-            color_discrete_map=CHANNEL_COLOR_MAP,
+with c3:
+    companies = ["전체"] + sorted(df["기업명"].dropna().unique().tolist())
+    f_company = st.selectbox("기업명", companies, index=0, key="company")
+
+with c4:
+    l1, l2, l3 = st.columns([1, 1, 1])
+
+    with l1:
+        big_opts = ["전체"] + sorted(df["대분류"].dropna().unique().tolist())
+        big = st.selectbox(
+            "대분류",
+            big_opts,
+            index=big_opts.index(st.session_state.get("big", "전체")) if st.session_state.get("big", "전체") in big_opts else 0,
+            key="big_sel",
         )
-        fig2.update_traces(texttemplate="%{label}<br>%{percent} (%{value:,}건)")
-        fig2.update_layout(height=430, margin=dict(l=10, r=10, t=10, b=10))
 
-        st.plotly_chart(fig2, use_container_width=True)
+    if big != "전체":
+        mid_pool = df[df["대분류"] == big]["중분류"].dropna().unique().tolist()
+    else:
+        mid_pool = df["중분류"].dropna().unique().tolist()
+    mid_opts = ["전체"] + sorted(list(set(mid_pool)))
 
-    card_close()
+    with l2:
+        mid = st.selectbox(
+            "중분류",
+            mid_opts,
+            index=mid_opts.index(st.session_state.get("mid", "전체")) if st.session_state.get("mid", "전체") in mid_opts else 0,
+            key="mid_sel",
+        )
+
+    small_df = df.copy()
+    if big != "전체":
+        small_df = small_df[small_df["대분류"] == big]
+    if mid != "전체":
+        small_df = small_df[small_df["중분류"] == mid]
+    small_pool = small_df["소분류"].dropna().unique().tolist()
+    small_opts = ["전체"] + sorted(list(set(small_pool)))
+
+    with l3:
+        small = st.selectbox(
+            "소분류",
+            small_opts,
+            index=small_opts.index(st.session_state.get("small", "전체")) if st.session_state.get("small", "전체") in small_opts else 0,
+            key="small_sel",
+        )
+
+    st.session_state["big"] = big
+    st.session_state["mid"] = mid
+    st.session_state["small"] = small
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================
-# TOP10
+# Apply Filters
 # =============================
-card_open()
-st.subheader("문의 많은 기업 TOP10 (알수없음 제외)")
-fig_co = topn_bar(cur_df, "기업명", n=10, excludes=EXCLUDE_COMPANY, topk=5, crown=True)
-if fig_co is None:
-    st.info("표시할 데이터가 없습니다.")
-else:
-    st.plotly_chart(fig_co, use_container_width=True)
-card_close()
+fdf = df.copy()
+start_dt = pd.to_datetime(start_d)
+end_dt = pd.to_datetime(end_d) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+fdf = fdf[(fdf["날짜"] >= start_dt) & (fdf["날짜"] <= end_dt)]
 
-tabs = st.tabs(["대분류 TOP10", "중분류 TOP10", "소분류 TOP10"])
+if f_channel != "전체":
+    fdf = fdf[fdf["채널"] == f_channel]
+if f_company != "전체":
+    fdf = fdf[fdf["기업명"] == f_company]
 
-with tabs[0]:
-    card_open()
-    st.subheader("문의 많은 카테고리 TOP10 (대분류)  ※ 안내사항없음_자체해결 제외")
-    fig_big = topn_bar(cur_df, "대분류", n=10, excludes=EXCLUDE_CATEGORY, topk=5, crown=True)
-    if fig_big is None:
-        st.info("표시할 데이터가 없습니다.")
-    else:
-        st.plotly_chart(fig_big, use_container_width=True)
-    card_close()
+big = st.session_state.get("big", "전체")
+mid = st.session_state.get("mid", "전체")
+small = st.session_state.get("small", "전체")
 
-with tabs[1]:
-    card_open()
-    st.subheader("문의 많은 카테고리 TOP10 (중분류)  ※ 안내사항없음_자체해결 제외")
-    fig_mid = topn_bar(cur_df, "중분류", n=10, excludes=EXCLUDE_CATEGORY, topk=5, crown=True)
-    if fig_mid is None:
-        st.info("표시할 데이터가 없습니다.")
-    else:
-        st.plotly_chart(fig_mid, use_container_width=True)
-    card_close()
+if big != "전체":
+    fdf = fdf[fdf["대분류"] == big]
+if mid != "전체":
+    fdf = fdf[fdf["중분류"] == mid]
+if small != "전체":
+    fdf = fdf[fdf["소분류"] == small]
 
-with tabs[2]:
-    card_open()
-    st.subheader("문의 많은 카테고리 TOP10 (소분류)  ※ 안내사항없음_자체해결 제외")
-    fig_small = topn_bar(cur_df, "소분류", n=10, excludes=EXCLUDE_CATEGORY, topk=5, crown=True)
-    if fig_small is None:
-        st.info("표시할 데이터가 없습니다.")
-    else:
-        st.plotly_chart(fig_small, use_container_width=True)
-    card_close()
+# =============================
+# KPI
+# =============================
+total = len(fdf)
+by_ch = fdf["채널"].value_counts().to_dict()
+cnt_tel = by_ch.get("유선", 0)
+cnt_chat = by_ch.get("채팅", 0)
+cnt_board = by_ch.get("게시판", 0)
+corp_cnt = fdf["기업명"].nunique()
 
-# 상세 데이터는 요청대로 없음
+k1, k2, k3, k4 = st.columns(4)
+with k1: kpi("전체 인입 건수", fmt_int(total), f"기업 수: {fmt_int(corp_cnt)}", color="#111827")
+with k2: kpi("유선", fmt_int(cnt_tel), f"비중: {safe_ratio(cnt_tel, total):.1f}%", color=CHANNEL_COLOR_MAP["유선"])
+with k3: kpi("채팅", fmt_int(cnt_chat), f"비중: {safe_ratio(cnt_chat, total):.1f}%", color=CHANNEL_COLOR_MAP["채팅"])
+with k4: kpi("게시판", fmt_int(cnt_board), f"비중: {safe_ratio(cnt_board, total):.1f}%", color=CHANNEL_COLOR_MAP["게시판"])
+
+st.write("")
+
+# =============================
+# TOP ROW: 월별 / 요일 / 시간대
+# =============================
+a1, a2, a3 = st.columns(3)
+
+with a1:
+    with st.container():
+        card_title("📅", "월별 인입 추이")
+        if fdf.empty:
+            st.info("선택 조건에 해당하는 데이터가 없어요.")
+        else:
+            g = fdf.groupby(["월", "채널"]).size().reset_index(name="건수")
+            wide = (
+                g.pivot_table(index="월", columns="채널", values="건수", aggfunc="sum", fill_value=0)
+                .reset_index()
+                .sort_values("월")
+            )
+            for ch in CHANNELS:
+                if ch not in wide.columns:
+                    wide[ch] = 0
+            wide["총합"] = wide["유선"] + wide["채팅"] + wide["게시판"]
+            long = wide.melt(id_vars=["월", "총합"], value_vars=["유선", "채팅", "게시판"], var_name="채널", value_name="건수")
+            long["채널"] = pd.Categorical(long["채널"], categories=["유선", "채팅", "게시판"], ordered=True)
+
+            fig = px.bar(long, x="월", y="건수", color="채널", barmode="stack", color_discrete_map=CHANNEL_COLOR_MAP)
+            fig.update_layout(**base_layout(CHART_H_TOP, showlegend=True))
+            fig.update_layout(legend=dict(orientation="h", x=1.0, xanchor="right", y=1.15, yanchor="top", font=dict(size=11)))
+            fig.update_xaxes(type="date", tickformat="%Y.%m", showgrid=False, zeroline=False, showline=False, ticks="outside")
+            fig.update_yaxes(showgrid=False, zeroline=False, showline=False, showticklabels=False)
+            fig.update_layout(bargap=0.25)
+            for _, row in wide.iterrows():
+                fig.add_annotation(x=row["월"], y=row["총합"], text=f"{int(row['총합']):,}", showarrow=False, yshift=10, font=dict(size=11, color="#0f172a"))
+
+            best = wide.loc[wide["총합"].idxmax()]
+            chips([f"피크 월 <span class='b'>{pd.to_datetime(best['월']).strftime('%Y.%m')}</span> · <span class='b'>{int(best['총합']):,}</span>건"])
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+with a2:
+    with st.container():
+        card_title("🗓️", "요일별 인입 추이")
+        if fdf.empty:
+            st.info("선택 조건에 해당하는 데이터가 없어요.")
+        else:
+            dow_map = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
+            tmp = fdf.copy()
+            tmp["요일"] = tmp["날짜"].dt.weekday.map(dow_map)
+            order = ["월", "화", "수", "목", "금", "토", "일"]
+            gd = tmp.groupby("요일").size().reindex(order, fill_value=0).reset_index()
+            gd.columns = ["요일", "건수"]
+            best = gd.loc[gd["건수"].idxmax()]
+            chips([f"피크 요일 <span class='b'>{best['요일']}</span> · <span class='b'>{int(best['건수']):,}</span>건"])
+            figd = px.bar(gd, x="요일", y="건수", text="건수", color_discrete_sequence=[INDIGO_MAIN])
+            figd.update_layout(**base_layout(CHART_H_TOP, showlegend=False))
+            figd.update_xaxes(type="category", categoryorder="array", categoryarray=order, showgrid=False, zeroline=False, showline=False)
+            figd.update_yaxes(showgrid=False, zeroline=False, showline=False, showticklabels=False)
+            figd.update_traces(textposition="outside", cliponaxis=False)
+            st.plotly_chart(figd, use_container_width=True, config={"displayModeBar": False})
+
+with a3:
+    with st.container():
+        card_title("⏱️", "시간대별 인입 추이 (08~18시)")
+        if fdf.empty:
+            st.info("선택 조건에 해당하는 데이터가 없어요.")
+        else:
+            tmp = fdf.copy()
+            tmp["시간"] = tmp["날짜"].dt.hour
+            hours = list(range(8, 19))
+            gh = tmp.groupby("시간").size().reindex(hours, fill_value=0).reset_index()
+            gh.columns = ["시간", "건수"]
+            best = gh.loc[gh["건수"].idxmax()]
+            chips([f"피크 시간 <span class='b'>{int(best['시간']):02d}시</span> · <span class='b'>{int(best['건수']):,}</span>건"])
+            figh = px.line(gh, x="시간", y="건수", markers=True, color_discrete_sequence=[INDIGO_MAIN])
+            figh.update_layout(**base_layout(CHART_H_TOP, showlegend=False))
+            figh.update_xaxes(tickmode="array", tickvals=hours, ticktext=[f"{h:02d}시" for h in hours], showgrid=False, zeroline=False, showline=False)
+            figh.update_yaxes(showgrid=False, zeroline=False, showline=False, showticklabels=False)
+            st.plotly_chart(figh, use_container_width=True, config={"displayModeBar": False})
+
+# =============================
+# SECOND ROW: 기업 TOP10 + 도넛 (도넛 아래로 확정)
+# =============================
+b1, b2 = st.columns([1.6, 1.0])
+
+with b1:
+    with st.container():
+        card_title("🏢", "문의 많은 기업 TOP 10")
+
+        exclude_companies = {"알수없음", "(주)휴넷"}
+        top = (
+            fdf[~fdf["기업명"].isin(exclude_companies)]
+            ["기업명"].dropna()
+            .value_counts().head(10)
+            .reset_index()
+        )
+        top.columns = ["기업명", "건수"]
+
+        if top.empty:
+            st.info("표시할 기업 데이터가 없어요.")
+        else:
+            top = top.sort_values("건수", ascending=False).reset_index(drop=True)
+            top["순위"] = range(1, len(top) + 1)
+            top.loc[top["순위"] == 1, "기업명"] = "👑 " + top.loc[top["순위"] == 1, "기업명"]
+            top["그룹"] = top["순위"].apply(lambda r: "TOP5" if r <= 5 else "6~10")
+            cat_array = top["기업명"].tolist()
+
+            top1_name = clean_label(top.loc[0, "기업명"])
+            top1_cnt = int(top.loc[0, "건수"])
+            chips([f"TOP1 <span class='b'>{top1_name}</span> · <span class='b'>{top1_cnt:,}</span>건"])
+
+            figc = px.bar(
+                top,
+                x="건수",
+                y="기업명",
+                orientation="h",
+                color="그룹",
+                color_discrete_map={"TOP5": INDIGO_TOP5, "6~10": INDIGO_6_10},
+                text="건수",
+            )
+            figc.update_layout(**base_layout(CHART_H_SECOND, showlegend=False))
+            figc.update_yaxes(categoryorder="array", categoryarray=cat_array[::-1], showgrid=False, zeroline=False, showline=False)
+            figc.update_xaxes(showgrid=False, zeroline=False, showline=False, showticklabels=False)
+            figc.update_traces(textposition="outside", cliponaxis=False)
+
+            if HAS_PLOTLY_EVENTS:
+                selected = plotly_events(
+                    figc,
+                    click_event=True,
+                    hover_event=False,
+                    select_event=False,
+                    override_height=CHART_H_SECOND,
+                    key="evt_company_top10",
+                )
+                if selected:
+                    picked = clean_label(selected[0].get("y", ""))
+                    if picked:
+                        st.session_state["company"] = picked if picked in companies else "전체"
+                        st.rerun()
+            else:
+                st.plotly_chart(figc, use_container_width=True, config={"displayModeBar": False})
+
+with b2:
+    with st.container():
+        card_title("🍩", "채널 비중")
+
+        if total == 0:
+            st.info("표시할 데이터가 없어요.")
+        else:
+            donut_df = pd.DataFrame({"채널": ["유선", "채팅", "게시판"], "건수": [cnt_tel, cnt_chat, cnt_board]})
+            if donut_df["건수"].sum() == 0:
+                st.info("표시할 데이터가 없어요.")
+            else:
+                figp = px.pie(
+                    donut_df,
+                    names="채널",
+                    values="건수",
+                    hole=0.62,
+                    color="채널",
+                    color_discrete_map=CHANNEL_COLOR_MAP,
+                )
+
+                # ✅ 이제 margin 중복 없음(여기서만 커스텀 margin 넣음)
+                figp.update_layout(
+                    **base_layout(
+                        CHART_H_SECOND,
+                        showlegend=True,
+                        margin=dict(l=12, r=12, t=34, b=44),
+                    ),
+                    legend=dict(
+                        orientation="h",
+                        x=0.5, xanchor="center",
+                        y=1.08, yanchor="bottom",
+                        font=dict(size=11),
+                    ),
+                )
+
+                # ✅ 원 자체를 아래로
+                figp.update_traces(
+                    domain=dict(x=[0.0, 1.0], y=[0.00, 0.90]),
+                    textposition="inside",
+                    texttemplate="%{value:,}<br>(%{percent})",
+                    hovertemplate="%{label}<br>%{value:,}건 (%{percent})<extra></extra>",
+                )
+
+                # ✅ 가운데 숫자도 같이 아래로
+                total_sum = int(donut_df["건수"].sum())
+                figp.add_annotation(
+                    x=0.5, y=0.45,
+                    xref="paper", yref="paper",
+                    text=f"<span style='color:#0f172a;font-size:30px;font-weight:950;'>{total_sum:,}</span>",
+                    showarrow=False,
+                    align="center",
+                )
+
+                st.plotly_chart(figp, use_container_width=True, config={"displayModeBar": False})
+
+# =============================
+# Bottom: 대/중/소 TOP10
+# =============================
+EXCLUDE_PATTERN = r"(안내사항없음|자체해결|_자체해결)"
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    with st.container():
+        card_title("🗂️", "대분류 TOP 10")
+        top10_like(fdf, "대분류", CHART_H_BOTTOM, exclude_pattern=EXCLUDE_PATTERN)
+
+with c2:
+    with st.container():
+        card_title("🧩", "중분류 TOP 10")
+        top10_like(fdf, "중분류", CHART_H_BOTTOM, exclude_pattern=EXCLUDE_PATTERN)
+
+with c3:
+    with st.container():
+        card_title("🏷️", "소분류 TOP 10")
+        top10_like(fdf, "소분류", CHART_H_BOTTOM, exclude_pattern=EXCLUDE_PATTERN)
+
+st.caption("※ Premium UI v12.4.1 (margin 충돌 에러 해결 + 도넛 세로 중앙 보정 확정)")

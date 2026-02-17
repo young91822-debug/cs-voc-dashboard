@@ -102,25 +102,23 @@ def month_count(df: pd.DataFrame, mp):
     return int((df["_월p"] == mp).sum())
 
 def chips_html(items):
-    # items: list[str]
+    # ✅ 들여쓰기/줄바꿈 때문에 코드블록으로 렌더링되는 문제 방지: 한 줄 HTML로 만든다
     spans = []
     for t in items:
         spans.append(
-            f"""
-            <span style="
-              display:inline-block;
-              padding:6px 10px;
-              margin-right:6px;
-              margin-bottom:6px;
-              border-radius:999px;
-              background:rgba(255,255,255,0.78);
-              border:1px solid rgba(15,23,42,0.10);
-              font-size:12.5px;
-              font-weight:800;
-              color:rgba(15,23,42,0.82);
-              box-shadow:0 8px 18px rgba(2,8,23,0.06);
-            ">{t}</span>
-            """
+            f'<span style="'
+            f'display:inline-block;'
+            f'padding:6px 10px;'
+            f'margin-right:6px;'
+            f'margin-bottom:6px;'
+            f'border-radius:999px;'
+            f'background:rgba(255,255,255,0.78);'
+            f'border:1px solid rgba(15,23,42,0.10);'
+            f'font-size:12.5px;'
+            f'font-weight:800;'
+            f'color:rgba(15,23,42,0.82);'
+            f'box-shadow:0 8px 18px rgba(2,8,23,0.06);'
+            f'">{t}</span>'
         )
     return "<div style='display:flex;flex-wrap:wrap;gap:0px;'>" + "".join(spans) + "</div>"
 
